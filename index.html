@@ -4299,6 +4299,269 @@ console.log('Personnages sauvegardés · Mode Auto/Manuel · Protocole · Voix o
 });
 
 })();
+// ═══════════════════════════════════════════════════════════
+// v11.5 — LECTURE DU PROTOCOLE AVANCÉ
+// Permet de charger les protocoles au format { serie, plans: [...] }
+// ═══════════════════════════════════════════════════════════
+(function advancedProtocolParser() {
+'use strict';
+
+function $(id) { return document.getElementById(id); }
+function sleep(ms) { return new Promise(function(r){ setTimeout(r, ms); }); }
+
+// Attend que DianaIA soit prêt
+function waitForApp(cb) {
+if (window.DianaIA) { cb(); return; }
+setTimeout(function(){ waitForApp(cb); }, 300);
+}
+
+waitForApp(function() {
+var App = window.DianaIA;
+var state = App.state;
+
+// ═══════════════════════════════════════════════════════
+// 1. INTERCEPTEUR DE FICHIER
+// ═══════════════════════════════════════════════════════
+var protocolInput = $('protocol-input');
+if (!protocolInput) {
+console.warn('[v11.5] Champ protocole introuvable');
+return;
+}
+
+// On clone l'input pour retirer les anciens écouteurs
+var newInput = protocolInput.cloneNode(true);
+protocolInput.parentNode.replaceChild(newInput, protocolInput);
+protocolInput = newInput;
+
+// Nouvel écouteur qui détecte le format
+protocolInput.addEventListener('change', function(e) {
+if (!e.target.files || !e.target.files[0]) return;
+var file = e.target.files[0];
+if (file.size > 5 * 1024 * 1024) {
+App.showToast('Fichier trop volumineux (max 5 Mo)', 'error');
+return;
+}
+var reader = new FileReader();
+reader.onload = function(evt) {
+var text = evt.target.result;
+var data = null;
+try { data = JSON.parse(text); } catch (err) {
+App.showToast('Fichier JSON invalide', 'error');
+return;
+}
+
+// Détection : format avancé avec "plans" ?
+if (data && data.plans && Array.isArray(data.plans)) {
+e.stopImmediatePropagation();
+handleAdvancedProtocol(data, file.name);
+} else {
+// Sinon, on laisse le parser original faire son travail
+// (on re-déclenche l'événement change pour le parser natif)
+}
+};
+reader.readAsText(file);
+});
+
+// ═══════════════════════════════════════════════════════
+// 2. PARSER DU FORMAT AVANCÉ
+// ═══════════════════════════════════════════════════════
+function handleAdvancedProtocol(data, fileName) {
+var App = window.DianaIA;
+var state = App.state;
+var $ = App.$;
+
+// ─── TITRE ───
+var titre = data.serie || data.title || 'Sans titre';
+if (data.episode) titre += ' · Épisode ' + data.episode;
+
+// ─── FORMAT ───
+if (data.format === '9:16' || data.format === 'portrait') state.selectedFormat = 'portrait';
+else if (data.format === '16:9' || data.format === 'youtube') state.selectedFormat = 'youtube';
+else if (data.format === '1:1' || data.format === 'square') state.selectedFormat = 'square';
+else state.selectedFormat = 'portrait';
+
+// ─── STYLE ───
+state.selectedStyle = state.selectedStyle || 'cinematic';
+
+// ─── EXTRACTION DES PERSONNAGES ───
+var charactersMap = {};
+data.plans.forEach(function(plan) {
+if (!plan.personnages) return;
+// Extraction des noms en gras : **Elif :** ou **Fatma Yıldız :**
+var regex = /\*\*([^*]+?)\s*:?\*\*/g;
+var m;
+while ((m = regex.exec(plan.personnages)) !== null) {
+var name = m[1].replace(/:$/, '').trim();
+if (!name || name.length > 60) continue;
+if (/^(Aucun personnage|Aucun)/i.test(name)) continue;
+if (!charactersMap[name]) {
+charactersMap[name] = {
+name: name,
+description: '',
+role: '',
+photo: '',
+locked: true
+};
+}
+}
+});
+
+// Enrichissement avec descriptions trouvées dans les prompts
+data.plans.forEach(function(plan) {
+if (!plan.prompt_image_depart) return;
+Object.keys(charactersMap).forEach(function(charName) {
+if (charactersMap[charName].description) return;
+// Cherche "Nom = description" dans le prompt
+var regex = new RegExp(charName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '[file://\\s*=\\s*([^;]{20,400}]\\s*=\\s*([^;]{20,400})', 'i');
+var m = plan.prompt_image_depart.match(regex);
+if (m && m[1]) {
+charactersMap[charName].description = m[1].trim().slice(0, 400);
+}
+});
+});
+
+state.characters = Object.values(charactersMap);
+App.saveStorage();
+
+// ─── EXTRACTION DES SCÈNES ───
+var scenes = data.plans
+.filter(function(plan) {
+// Skip les plans vides
+if (!plan.prompt_video_complet || plan.prompt_video_complet.length < 50) return false;
+if (!plan.prompt_image_depart || plan.prompt_image_depart.length < 50) return false;
+return true;
+})
+.map(function(plan) {
+// Premier dialogue
+var dialogueText = '';
+var speakerName = '';
+if (plan.dialogue && Array.isArray(plan.dialogue) && plan.dialogue.length > 0) {
+var d = plan.dialogue[0];
+dialogueText = d.texte || '';
+speakerName = d.personnage || '';
+}
+
+// Fusion du prompt négatif dans le prompt principal
+var negatif = plan.prompt_negatif || 'text, letters, subtitles, watermark, logo, extra fingers, deformed hands, distorted face, morphing, blur, low quality';
+var promptFinal = plan.prompt_video_complet + ' AVOID: ' + negatif;
+
+// Ajout du timing des dialogues
+var timingInfo = '';
+if (plan.dialogue && plan.dialogue.length > 0) {
+var dialogues = plan.dialogue.map(function(d) {
+return (d.personnage || '?') + ' says at ' + (d.debut_s || 0) + 's : "' + (d.texte || '') + '" (' + (d.intonation || '') + ')';
+}).join(' | ');
+timingInfo = ' | DIALOGUE TIMING: ' + dialogues;
+}
+
+return {
+scene_number: plan.plan,
+title: plan.titre || '',
+action: plan.scene || '',
+setting: plan.camera || '',
+image_prompt: plan.prompt_image_depart,
+video_prompt: promptFinal + timingInfo,
+camera: 'auto',
+shot: 'auto',
+emotion: 'auto',
+dialogue: dialogueText,
+speaker: speakerName,
+transition: 'cut',
+duration: plan.duree_generation_s || 5
+};
+});
+
+// ─── STOCKAGE ───
+state.protocol.loaded = true;
+state.protocol.raw = JSON.stringify(data);
+state.protocol.data = {
+title: titre,
+scenes: scenes,
+characters: state.characters,
+_isAdvanced: true
+};
+
+// ─── MISE À JOUR UI ───
+var slider = $('plans-slider');
+if (slider) {
+slider.value = Math.min(scenes.length, 100);
+}
+var display = $('plans-count-display');
+if (display) display.textContent = scenes.length;
+var estimate = $('plans-time-estimate');
+if (estimate) {
+var totalMin = Math.ceil(scenes.length * 65 / 60);
+estimate.textContent = '💡 ' + scenes.length + ' plans détectés · Génération ≈ ' + totalMin + ' min';
+}
+var ta = $('protocol-text');
+if (ta) {
+ta.value = '📄 ' + titre + '\n' +
+'━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n' +
+scenes.length + ' plans · ' + state.characters.length + ' personnages\n' +
+'Format : ' + (data.format || '9:16') + '\n' +
+'━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n' +
+'✨ Clique sur "Créer avec Diana" pour lancer la génération.';
+}
+
+// ─── BADGE STATUT ───
+var status = $('protocol-status');
+if (status) {
+status.classList.add('visible');
+status.innerHTML =
+'<div class="proto-line"><span class="check">✓</span> Protocole avancé : ' + esc(titre) + '</div>' +
+'<div class="proto-line"><span class="check">✓</span> ' + scenes.length + ' plans extraits</div>' +
+'<div class="proto-line"><span class="check">✓</span> ' + state.characters.length + ' personnages détectés</div>' +
+'<div class="proto-line"><span class="check">✓</span> Format : ' + (data.format || '9:16') + '</div>';
+}
+
+// ─── RENDU ───
+App.renderCharacters();
+App.updateStoryboard();
+App.updateAgentBtn();
+App.showToast('📄 Protocole chargé ✦ ' + scenes.length + ' plans', 'success', 4000);
+
+console.log('[v11.5] Protocole chargé :', scenes.length, 'plans,', state.characters.length, 'personnages');
+}
+
+function esc(s) {
+return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){
+return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c];
+});
+}
+
+// ═══════════════════════════════════════════════════════
+// 3. OVERRIDE DE buildPrompt POUR UTILISER LES PROMPTS AVANCÉS
+// ═══════════════════════════════════════════════════════
+var originalBuildPrompt = App.buildPrompt;
+
+App.buildPrompt = function() {
+var state = App.state;
+
+if (state.protocol.loaded && state.protocol.data && state.protocol.data._isAdvanced) {
+var scenes = state.protocol.data.scenes || [];
+
+// Détermine l'index du plan en cours
+var idx = 0;
+if (state.isRunning && state.queue && state.queue.length > 0) {
+for (var i = 0; i < state.queue.length; i++) {
+if (state.queue[i].status === 'processing') { idx = i; break; }
+}
+} else if (state.generationMode === 'manual') {
+idx = state.manualIndex || 0;
+}
+
+if (idx < scenes.length && scenes[idx] && scenes[idx].video_prompt) {
+return scenes[idx].video_prompt;
+}
+}
+
+return originalBuildPrompt.call(App);
+};
+
+console.log('[v11.5] Parser avancé activé ✦');
+});
+
+})();
 </script>
 
 </body>
