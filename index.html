@@ -333,8 +333,8 @@ details > *:not(summary){margin-top:0.6rem}
 <div class="agent-subtitle">Décris ta scène — Diana s'occupe des images, des voix et de la vidéo</div>
 <textarea class="agent-textarea" id="agent-idea" placeholder="Ex. Elif, en robe bleu marine, entre par la porte de service du Yalı au lever du soleil. Brume sur le Bosphore…"></textarea>
 <div class="agent-options-row">
-<div class="agent-opt-chip active" id="agent-opt-photos" data-opt="photos" role="button" tabindex="0" aria-pressed="true">📸 Mes photos</div>
-<div class="agent-opt-chip" id="agent-opt-generate" data-opt="generate" role="button" tabindex="0" aria-pressed="false">🎨 Tout générer</div>
+<div class="agent-opt-chip active" id="agent-opt-photos" data-opt="photos">📸 Mes photos</div>
+<div class="agent-opt-chip" id="agent-opt-generate" data-opt="generate">🎨 Tout générer</div>
 </div>
 <div class="slider-row">
 <div class="slider-label">
@@ -786,23 +786,6 @@ Mode Auto + Manuel · Personnages sauvegardés · Protocole · Upscaling 4K · V
 </div>
 </div>
 
-<!-- MODALE AIDE -->
-<div class="upscale-modal" id="help-modal">
-<div class="upscale-panel" style="text-align:left; max-width:440px;">
-<div class="upscale-icon" style="text-align:center;">💋</div>
-<div class="upscale-title" style="text-align:center;">DianaIA Studio Couture v12.0</div>
-<div style="font-size:0.8rem; color:var(--ink-dim); line-height:1.8; font-family:var(--serif); font-style:italic; margin:1rem 0;">
-<strong style="color:var(--gold-hi); font-style:normal;">✨ Créer</strong> — Ajoute tes photos, décris ta scène.<br>
-<strong style="color:var(--gold-hi); font-style:normal;">📄 Protocole</strong> — Charge un JSON avec <code>{ plans: [...] }</code>.<br>
-<strong style="color:var(--gold-hi); font-style:normal;">🎨 Style</strong> — Personnages, caméra, effets.<br>
-<strong style="color:var(--gold-hi); font-style:normal;">🎞️ Galerie</strong> — Toutes tes vidéos.<br>
-<strong style="color:var(--gold-hi); font-style:normal;">📖 Studio</strong> — Storyboard + mode manuel.<br>
-<strong style="color:var(--gold-hi); font-style:normal;">⚙️ Réglages</strong> — Ta clé API Agnes.
-</div>
-<button type="button" class="btn-secondary" id="help-close-btn" style="margin:0;">Fermer</button>
-</div>
-</div>
-
 <!-- STATUS BAR + TOAST + NO SLEEP -->
 <div class="status-bar" id="status-bar">
 <div class="spinner"></div>
@@ -831,15 +814,9 @@ var MODEL_TEXT = 'agnes-2.5-flash';
 var MODEL_IMAGE = 'agnes-image-2.1-flash';
 var FRAME_RATE = 24;
 var POLL_INTERVAL_SEC = 8;
-var POLL_INITIAL_WAIT_SEC = 30;
+var POLL_INITIAL_WAIT_SEC = 80;
 var MAX_POLL_ATTEMPTS = 100;
 var PARALLEL_IMAGE_COUNT = 3;
-
-// Proxy optionnel (Cloudflare Worker, Vercel Edge, etc.)
-// Laisse vide pour utiliser la clé directe (déconseillé en prod).
-var PROXY_URL = '';
-
-var FETCH_TIMEOUT_MS = 45000;
 
 var API_KEY_STORAGE = 'dianaia_v12_apikey';
 var WAKE_LOCK_PREF = 'dianaia_v12_wakelock';
@@ -1324,75 +1301,35 @@ img.src = url;
 }
 
 // ═══════════════════════════════════════════════════════════════
-// API FETCH AVEC RETRY + TIMEOUT + CORS
+// API FETCH AVEC RETRY
 // ═══════════════════════════════════════════════════════════════
-async function fetchWithTimeout(url, options, timeoutMs) {
-var controller = new AbortController();
-var timeoutId = setTimeout(function(){ controller.abort(); }, timeoutMs);
-try {
-var opts = Object.assign({}, options || {});
-opts.signal = controller.signal;
-var res = await fetch(url, opts);
-clearTimeout(timeoutId);
-return res;
-} catch (e) {
-clearTimeout(timeoutId);
-throw e;
-}
-}
-
 async function apiFetch(url, options) {
 options = options || {};
-
-// Redirection vers proxy si configuré
-if (PROXY_URL && url.indexOf(API_BASE) === 0) {
-url = PROXY_URL + url.slice(API_BASE.length);
-}
-
 for (var attempt = 0; attempt < 7; attempt++) {
 if (state.stopRequested) throw new Error('Arrêt demandé');
-
 try {
-var res = await fetchWithTimeout(url, options, FETCH_TIMEOUT_MS);
-
-if (res.status === 401 || res.status === 403) {
-throw new Error('Clé API invalide ou expirée (HTTP ' + res.status + ')');
-}
-if (res.status === 404) {
-throw new Error('Endpoint introuvable (HTTP 404) — vérifie l\'URL de l\'API');
-}
+var res = await fetch(url, options);
 if (res.status === 429) {
 var wait = [10, 20, 35, 50, 75, 100, 150][Math.min(attempt, 6)];
 setStatus('Patience… (' + wait + 's)');
 await sleep(wait * 1000);
 continue;
 }
-if (res.status === 503 || res.status === 502 || res.status === 500) {
+if (res.status === 503) {
 var wait2 = [5, 10, 15, 20, 30, 45][Math.min(attempt, 5)];
-setStatus('Serveur occupé… (' + wait2 + 's)');
+setStatus('Préparation… (' + wait2 + 's)');
 await sleep(wait2 * 1000);
 continue;
 }
 return res;
 } catch (e) {
 if (e.message === 'Arrêt demandé') throw e;
-if (/401|403|404/.test(e.message)) throw e;
-if (e.name === 'AbortError') {
 var wait3 = [3, 5, 8, 12, 20, 30][Math.min(attempt, 5)];
-setStatus('Timeout… nouvelle tentative (' + wait3 + 's)');
+setStatus('Connexion… (' + wait3 + 's)');
 await sleep(wait3 * 1000);
-continue;
-}
-// Erreur réseau / CORS
-if (attempt >= 2 && (e instanceof TypeError || /Failed to fetch|NetworkError|CORS/i.test(e.message || ''))) {
-throw new Error('Erreur réseau / CORS. Vérifie ta connexion ou configure un proxy.');
-}
-var wait4 = [3, 5, 8, 12, 20, 30][Math.min(attempt, 5)];
-setStatus('Connexion… (' + wait4 + 's)');
-await sleep(wait4 * 1000);
 }
 }
-return fetchWithTimeout(url, options, FETCH_TIMEOUT_MS);
+return fetch(url, options);
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1423,8 +1360,7 @@ var err = await res.text();
 throw new Error('HTTP ' + res.status + ' — ' + err.slice(0, 200));
 }
 var data = await res.json();
-// Détection multi-champs
-var videoId = data.video_id || data.id || data.task_id || (data.data && (data.data.id || data.data.video_id)) || (data.output && data.output.id);
+var videoId = data.video_id || data.id || data.task_id;
 if (!videoId) throw new Error('Pas de video_id retourné');
 return videoId;
 }
@@ -1458,7 +1394,7 @@ var status = d.status || 'unknown';
 var progress = d.progress || 0;
 onProgress('Création… ' + progress + '%');
 if (status === 'completed' || status === 'succeeded' || status === 'done') {
-var videoUrl = (d.metadata && d.metadata.url) || d.url || (d.output && d.output.url) || (d.data && d.data.url);
+var videoUrl = (d.metadata && d.metadata.url) || d.url || (d.output && d.output.url);
 if (!videoUrl) throw new Error('Terminé mais pas d\'URL');
 return videoUrl;
 }
@@ -1602,11 +1538,13 @@ return null;
 // BUILD PROMPT
 // ═══════════════════════════════════════════════════════════════
 function buildPrompt() {
+// 1. Prompt libre si rempli
 var customEl = $('custom-prompt');
 if (customEl && customEl.value.trim().length > 10) {
 return customEl.value.trim();
 }
 
+// 2. Protocole avancé : utiliser le prompt du plan courant
 if (state.protocol.loaded && state.protocol.data && state.protocol.data._isAdvanced) {
 var scenes = state.protocol.data.scenes || [];
 var idx = 0;
@@ -1622,6 +1560,7 @@ return scenes[idx].video_prompt;
 }
 }
 
+// 3. Prompt construit à partir du style
 var style = STYLES.find(function(s){ return s.id === state.selectedStyle; });
 if (!style) return 'Animate this image.';
 var parts = [];
@@ -1694,10 +1633,6 @@ return parts.join('. ');
 // HISTORIQUE
 // ═══════════════════════════════════════════════════════════════
 function addToHistory(videoUrl, styleName, durationLabel, sceneSummary, formatLabel, isNew) {
-// Déduplication par URL
-var existing = state.history.find(function(h){ return h.url === videoUrl; });
-if (existing) return existing.id;
-
 var entry = {
 id: Date.now() + Math.random(),
 url: videoUrl,
@@ -1817,7 +1752,7 @@ var fmt = FORMATS.find(function(f){ return f.id === state.selectedFormat; }) || 
 var styleName = style ? style.name : (state.protocol.loaded ? 'Protocole' : 'Prompt libre');
 var durLabel = dur ? dur.label : '';
 var fmtLabel = fmt ? fmt.name + ' ' + fmt.ratio : '';
-var sceneSummary = state.scene.action || (state.protocol.loaded && state.protocol.data ? state.protocol.data.title : '');
+var sceneSummary = state.scene.action || (state.protocol.loaded ? state.protocol.data.title : '');
 
 state.queue = state.photos.map(function(p, i){
 return { index:i, total: state.photos.length, photo: p, status:'pending', progress:null, errorMsg:null };
@@ -1859,11 +1794,12 @@ addToHistory(videoUrl, styleName, durLabel, sceneSummary, fmtLabel, true);
 renderGallery();
 setStatus('✦ ' + successCount + '/' + state.queue.length + ' prête' + (successCount > 1 ? 's' : '') + ' ✦');
 showToast('Vidéo ' + (i + 1) + ' prête ✦', 'success', 3000);
+if (state.tts && state.scene.dialogue) speakText(state.scene.dialogue);
 } catch (e) {
 if (e.message === 'Arrêt demandé') { item.status = 'failed'; item.errorMsg = 'Arrêté'; break; }
 item.status = 'failed';
 item.errorMsg = 'Échec';
-showToast('Erreur vidéo ' + (i + 1) + ' : ' + e.message.slice(0, 60), 'error', 4000);
+showToast('Erreur vidéo ' + (i + 1), 'error', 3000);
 }
 renderQueue();
 if (i < state.queue.length - 1 && !state.stopRequested) {
@@ -1883,12 +1819,6 @@ state.stopRequested = false;
 if ($('stop-btn')) $('stop-btn').classList.remove('visible');
 updateGenerateBtn();
 await deactivateWakeLock();
-
-// TTS unique en fin
-if (state.tts && state.scene.dialogue && successCount > 0) {
-speakText(state.scene.dialogue);
-}
-
 updateProgressSummary();
 }
 
@@ -1897,6 +1827,66 @@ if (!state.isRunning && !state.agent.isRunning) return;
 state.stopRequested = true;
 setStatus('Arrêt en cours…');
 }
+
+// ═══════════════════════════════════════════════════════════════
+// EXPORT AU WINDOW POUR LA PARTIE 5
+// ═══════════════════════════════════════════════════════════════
+window.DianaIA = {
+state: state,
+$: $,
+sleep: sleep,
+esc: esc,
+showToast: showToast,
+setStatus: setStatus,
+agentLog: agentLog,
+apiFetch: apiFetch,
+createVideoTask: createVideoTask,
+pollVideo: pollVideo,
+generateImage: generateImage,
+generateImagesParallel: generateImagesParallel,
+callAgentTextAPI: callAgentTextAPI,
+parseJSON: parseJSON,
+buildPrompt: buildPrompt,
+addToHistory: addToHistory,
+removeFromHistory: removeFromHistory,
+toggleFavorite: toggleFavorite,
+updateProgressSummary: updateProgressSummary,
+renderQueue: renderQueue,
+updateGenerateBtn: updateGenerateBtn,
+updateAgentBtn: updateAgentBtn,
+startGeneration: startGeneration,
+stopGeneration: stopGeneration,
+saveStorage: saveStorage,
+loadStorage: loadStorage,
+getApiKey: getApiKey,
+saveApiKey: saveApiKey,
+updateApiPanel: updateApiPanel,
+ensureWakeLockActive: ensureWakeLockActive,
+deactivateWakeLock: deactivateWakeLock,
+formatDuration: formatDuration,
+formatDate: formatDate,
+FORMATS: FORMATS,
+STYLES: STYLES,
+DURATIONS: DURATIONS,
+EFFECTS: EFFECTS,
+ACTION_PRESETS: ACTION_PRESETS,
+EMOTION_MAP: EMOTION_MAP,
+CAMERA_MAP: CAMERA_MAP,
+SHOT_MAP: SHOT_MAP,
+SOUND_MAP: SOUND_MAP,
+RHYTHM_MAP: RHYTHM_MAP,
+INTENSITY_MAP: INTENSITY_MAP,
+MAX_CHARS_PER_VIDEO: MAX_CHARS_PER_VIDEO,
+MAX_PROTOCOL_SIZE: MAX_PROTOCOL_SIZE,
+PARALLEL_IMAGE_COUNT: PARALLEL_IMAGE_COUNT,
+API_BASE: API_BASE,
+POLL_BASE: POLL_BASE,
+MODEL_VIDEO: MODEL_VIDEO,
+MODEL_TEXT: MODEL_TEXT,
+MODEL_IMAGE: MODEL_IMAGE,
+FRAME_RATE: FRAME_RATE,
+WAKE_LOCK_PREF: WAKE_LOCK_PREF
+};
 
 // ═══════════════════════════════════════════════════════════════
 // RENDU PHOTOS
@@ -1922,7 +1912,6 @@ state.photos = state.photos.filter(function(p){ return String(p.id) !== btn.getA
 renderPhotoList();
 updateGenerateBtn();
 renderStoryboardVisual();
-updateManualPanel();
 });
 });
 list.querySelectorAll('[data-download]').forEach(function(btn){
@@ -2231,7 +2220,6 @@ state.photos = state.photos.filter(function(p){ return String(p.id) !== btn.getA
 renderPhotoList();
 renderStoryboardVisual();
 updateGenerateBtn();
-updateManualPanel();
 });
 });
 v.querySelectorAll('[data-thumb-dl]').forEach(function(btn){
@@ -2264,7 +2252,7 @@ return '<div style="background:rgba(18,3,8,.5); border:1px solid rgba(216,180,10
 }
 
 // ═══════════════════════════════════════════════════════════════
-// RENDU GALERIE (append intelligent)
+// RENDU GALERIE (temps réel)
 // ═══════════════════════════════════════════════════════════════
 function renderGallery() {
 var g = $('gallery-grid');
@@ -2272,38 +2260,16 @@ var e = $('gallery-empty');
 var c = $('gallery-count');
 if (c) c.textContent = state.history.length;
 if (!g) return;
-
 if (!state.history.length) {
 g.innerHTML = '';
 if (e) e.style.display = 'block';
 return;
 }
 if (e) e.style.display = 'none';
-
-var existingIds = Array.prototype.map.call(g.querySelectorAll('[data-vid-id]'), function(el){
-return el.getAttribute('data-vid-id');
-});
-
-state.history.forEach(function(h){
-var idStr = String(h.id);
-
-if (existingIds.indexOf(idStr) !== -1) {
-var existingEl = g.querySelector('[data-vid-id="' + idStr + '"]');
-if (existingEl) {
-var isFav = state.favorites.indexOf(h.id) !== -1;
-existingEl.classList.toggle('favorite', isFav);
-var favBtn = existingEl.querySelector('[data-fav]');
-if (favBtn) {
-favBtn.classList.toggle('active', isFav);
-favBtn.textContent = isFav ? '★' : '☆';
-}
-}
-return;
-}
-
+g.innerHTML = state.history.map(function(h){
 var isFav = state.favorites.indexOf(h.id) !== -1;
 var newClass = h.isNew ? ' newly-added' : '';
-var html =
+return '<div class="gallery-item' + (isFav ? ' favorite' : '') + newClass + '" data-vid-id="' + h.id + '">' +
 '<button type="button" class="g-remove" data-remove="' + h.id + '">✕</button>' +
 '<video controls preload="metadata" playsinline><source src="' + h.url + '" type="video/mp4"></video>' +
 '<div class="g-caption">' +
@@ -2315,50 +2281,29 @@ var html =
 '<button type="button" class="g-upscale" data-upscale="' + h.id + '">⚡ Upscaler 4K</button>' +
 '<button type="button" class="g-fav' + (isFav ? ' active' : '') + '" data-fav="' + h.id + '">' + (isFav ? '★' : '☆') + '</button>' +
 '</div>' +
+'</div>' +
 '</div>';
-
-var item = document.createElement('div');
-item.className = 'gallery-item' + (isFav ? ' favorite' : '') + newClass;
-item.setAttribute('data-vid-id', idStr);
-item.innerHTML = html;
-
-if (h.isNew && g.firstChild) {
-g.insertBefore(item, g.firstChild);
-} else {
-g.appendChild(item);
-}
-
-bindGalleryItem(item);
-});
-
-Array.prototype.forEach.call(g.querySelectorAll('[data-vid-id]'), function(el){
-var id = el.getAttribute('data-vid-id');
-var stillExists = state.history.some(function(h){ return String(h.id) === id; });
-if (!stillExists) el.remove();
-});
-
+}).join('');
 setTimeout(function(){
 g.querySelectorAll('.newly-added').forEach(function(el){ el.classList.remove('newly-added'); });
 }, 3000);
-}
-
-function bindGalleryItem(item) {
-var rmBtn = item.querySelector('[data-remove]');
-if (rmBtn) rmBtn.addEventListener('click', function(e){
+g.querySelectorAll('[data-remove]').forEach(function(btn){
+btn.addEventListener('click', function(e){
 e.stopPropagation();
-if (confirm('Supprimer cette vidéo ?')) removeFromHistory(parseFloat(rmBtn.getAttribute('data-remove')));
+if (confirm('Supprimer cette vidéo ?')) removeFromHistory(parseFloat(btn.getAttribute('data-remove')));
 });
-
-var favBtn = item.querySelector('[data-fav]');
-if (favBtn) favBtn.addEventListener('click', function(e){
+});
+g.querySelectorAll('[data-fav]').forEach(function(btn){
+btn.addEventListener('click', function(e){
 e.stopPropagation();
-toggleFavorite(parseFloat(favBtn.getAttribute('data-fav')));
+toggleFavorite(parseFloat(btn.getAttribute('data-fav')));
 });
-
-var upBtn = item.querySelector('[data-upscale]');
-if (upBtn) upBtn.addEventListener('click', function(e){
+});
+g.querySelectorAll('[data-upscale]').forEach(function(btn){
+btn.addEventListener('click', function(e){
 e.stopPropagation();
 doUpscale();
+});
 });
 }
 
@@ -2410,26 +2355,21 @@ window.speechSynthesis.speak(u);
 function updateManualPanel() {
 var panel = $('manual-panel');
 if (!panel) return;
-var shouldShow = state.generationMode === 'manual' && state.photos.length > 0;
-if (!shouldShow) { panel.style.display = 'none'; return; }
+if (state.generationMode !== 'manual' || (!state.isRunning && !state.protocol.loaded)) {
+panel.style.display = 'none';
+return;
+}
 panel.style.display = 'block';
 var title = $('manual-current-title');
 var info = $('manual-current-info');
-var total = state.photos.length;
-var cur = Math.min(state.manualIndex + 1, total);
-if (title) title.textContent = 'Plan ' + cur + ' / ' + total;
-if (info) {
-var photoLabel = state.photos[state.manualIndex] && state.photos[state.manualIndex].isGenerated ? 'image générée' : 'photo source';
-info.textContent = 'Prêt à générer (' + photoLabel + '). Clique sur "Générer ce plan".';
-}
+if (title) title.textContent = 'Plan ' + (state.manualIndex + 1) + ' / ' + state.photos.length;
+if (info) info.textContent = 'Configure le plan, puis clique sur "Générer ce plan".';
 }
 
 async function generateManualPlan() {
 if (!getApiKey()) { showToast('Ajoutez votre clé API', 'error'); return; }
 if (!state.photos.length) { showToast('Ajoutez des photos', 'error'); return; }
 if (state.manualIndex >= state.photos.length) { showToast('Tous les plans sont terminés ✦', 'success'); return; }
-if (state.isRunning) { showToast('Patiente…', 'warn'); return; }
-
 var photo = state.photos[state.manualIndex];
 var customPrompt = $('manual-prompt-edit') ? $('manual-prompt-edit').value.trim() : '';
 var promptToUse = customPrompt.length > 10 ? customPrompt : buildPrompt();
@@ -2437,8 +2377,6 @@ state.isRunning = true;
 var genBtn = $('manual-generate-btn');
 if (genBtn) { genBtn.disabled = true; genBtn.textContent = 'Diana travaille…'; }
 setStatus('Plan ' + (state.manualIndex + 1) + ' — envoi…');
-wakeLockEnabled = true;
-await ensureWakeLockActive();
 try {
 var videoId = await createVideoTask(photo.dataUri, promptToUse);
 var videoUrl = await pollVideo(videoId, function(prog){ setStatus('Plan ' + (state.manualIndex + 1) + ' — ' + prog); });
@@ -2449,14 +2387,12 @@ addToHistory(videoUrl, styleName, dur ? dur.label : '', state.scene.action || ''
 renderGallery();
 showToast('Plan ' + (state.manualIndex + 1) + ' prêt ✦', 'success', 3000);
 state.manualVideos.push({ index: state.manualIndex, url: videoUrl });
-if (state.tts && state.scene.dialogue) speakText(state.scene.dialogue);
 } catch (e) {
-showToast('Erreur : ' + e.message.slice(0, 60), 'error', 4000);
+showToast('Erreur : ' + e.message.slice(0, 50), 'error', 3000);
 }
 state.isRunning = false;
 if (genBtn) { genBtn.disabled = false; genBtn.textContent = '✨ Générer ce plan'; }
 setStatus(null);
-await deactivateWakeLock();
 updateManualPanel();
 }
 
@@ -2512,12 +2448,7 @@ return f.type.indexOf('image/') === 0 || f.name.match(/\.(jpg|jpeg|png|heic|heif
 if (!list.length) { showToast('Aucune image valide', 'error'); return; }
 setStatus('Chargement de ' + list.length + ' photo(s)…');
 var added = 0;
-var skipped = 0;
 for (var i = 0; i < list.length; i++) {
-if (list[i].size > MAX_IMAGE_SIZE) {
-skipped++;
-continue;
-}
 try {
 var raw;
 try { raw = await fileToDataUri(list[i]); }
@@ -2532,9 +2463,7 @@ setStatus(null);
 renderPhotoList();
 updateGenerateBtn();
 renderStoryboardVisual();
-updateManualPanel();
 if (added > 0) showToast(added + ' photo' + (added > 1 ? 's' : '') + ' prête' + (added > 1 ? 's' : ''), 'success');
-if (skipped > 0) showToast(skipped + ' image(s) trop lourde(s) ignorée(s)', 'warn', 3500);
 }
 
 function handleMusicFile(file) {
@@ -2546,7 +2475,7 @@ showToast('Musique ajoutée ✦', 'success');
 }
 
 // ═══════════════════════════════════════════════════════════════
-// PROTOCOLE AVANCÉ
+// PROTOCOLE AVANCÉ (avec "plans")
 // ═══════════════════════════════════════════════════════════════
 function processAdvancedProtocol(data, fileName) {
 var titre = data.serie || data.title || 'Sans titre';
@@ -2559,6 +2488,7 @@ else state.selectedFormat = 'portrait';
 
 state.selectedStyle = state.selectedStyle || 'cinematic';
 
+// Extraction personnages
 var charsMap = {};
 data.plans.forEach(function(plan) {
 if (!plan.personnages) return;
@@ -2574,6 +2504,7 @@ if (!charsMap[n]) charsMap[n] = { name:n, description:'', role:'', photo:'', loc
 state.characters = Object.values(charsMap);
 saveStorage();
 
+// Extraction scènes
 var scenes = data.plans
 .filter(function(p){
 return p.prompt_video_complet && p.prompt_video_complet.length > 50 && p.prompt_image_depart && p.prompt_image_depart.length > 50;
@@ -2635,7 +2566,6 @@ status.innerHTML =
 }
 
 renderCharacters();
-renderFormats();
 updateStoryboard();
 updateAgentBtn();
 showToast('📄 Protocole chargé ✦ ' + scenes.length + ' plans', 'success', 4000);
@@ -2711,10 +2641,10 @@ processAdvancedProtocol(data, file.name);
 } else if (data.scenes && Array.isArray(data.scenes)) {
 processSimpleProtocol(data, file.name);
 } else {
-showToast('Format non reconnu (ni "plans" ni "scenes")', 'error');
+showToast('Format non reconnu', 'error');
 }
 };
-reader.onerror = function(){ showToast('Erreur de lecture du fichier', 'error'); };
+reader.onerror = function(){ showToast('Erreur de lecture', 'error'); };
 reader.readAsText(file);
 }
 
@@ -2723,7 +2653,6 @@ var ta = $('protocol-text');
 if (!ta) return;
 var text = ta.value.trim();
 if (text.length < 10) { showToast('Protocole trop court', 'error'); return; }
-if (text.indexOf('📄') === 0) { showToast('Efface d\'abord le résumé', 'warn'); return; }
 var data = null;
 try { data = JSON.parse(text); } catch (err) {
 showToast('Le texte collé n\'est pas un JSON valide', 'error');
@@ -2821,27 +2750,6 @@ state.protocol.raw = JSON.stringify(scenario);
 
 await sleep(500);
 if (state.stopRequested) throw new Error('Arrêt demandé');
-
-// Si l'utilisateur a choisi "Tout générer", on génère les images d'abord
-if (state.agent.generateImages && scenario.scenes && scenario.scenes.length > 0) {
-agentLog('Diana', '🎨 Génération de ' + scenario.scenes.length + ' images…', 'thinking');
-setStatus('Diana génère les images…');
-state.progress.imagesTotal = scenario.scenes.length;
-state.progress.imagesDone = 0;
-updateProgressSummary();
-
-await generateImagesParallel(scenario.scenes, function(idx) {
-var sc = scenario.scenes[idx];
-var base = sc.image_prompt || sc.video_prompt || idea;
-var st = STYLES.find(function(s){ return s.id === state.selectedStyle; });
-var styleTag = st ? (' — ' + st.style) : '';
-return base + styleTag;
-});
-
-agentLog('Diana', '✓ Images générées — passage aux vidéos', 'success');
-await sleep(700);
-}
-
 agentLog('Diana', '✓ Prête — lancement de la création', 'success');
 await sleep(700);
 await startGeneration();
@@ -2924,25 +2832,22 @@ if (tabName === 'gallery') renderGallery();
 document.addEventListener('DOMContentLoaded', function() {
 loadStorage();
 
+// Navigation
 document.querySelectorAll('.tab-btn').forEach(function(btn){
 btn.addEventListener('click', function(){ switchTab(btn.getAttribute('data-tab')); });
 });
 
+// Header
 var hs = $('header-settings-btn');
 if (hs) hs.addEventListener('click', function(){ switchTab('settings'); });
 var ha = $('header-api-status');
 if (ha) ha.addEventListener('click', function(){ switchTab('settings'); });
 var hh = $('header-help-btn');
 if (hh) hh.addEventListener('click', function(){
-var m = $('help-modal');
-if (m) m.classList.add('visible');
-});
-var hcb = $('help-close-btn');
-if (hcb) hcb.addEventListener('click', function(){
-var m = $('help-modal');
-if (m) m.classList.remove('visible');
+alert('💋 DianaIA Studio Couture v12.0\n\n🎬 Créer : ajoute tes photos, décris ta scène.\n\n📄 Protocole : charge ton fichier JSON avec la structure { plans: [...] }.\n\n🎨 Style : personnages, caméra, effets.\n\n🎞️ Galerie : toutes tes vidéos.\n\n📖 Studio : storyboard + mode manuel.\n\n⚙️ Réglages : ta clé API Agnes.');
 });
 
+// API
 var saveBtn = $('api-save-btn');
 if (saveBtn) saveBtn.addEventListener('click', saveApiKey);
 var apiInput = $('api-key-input');
@@ -2952,6 +2857,7 @@ if (e.key === 'Enter') { e.preventDefault(); saveApiKey(); }
 });
 }
 
+// Upload photos
 var fileInput = $('file-input');
 if (fileInput) {
 fileInput.addEventListener('change', function(e){
@@ -2961,6 +2867,7 @@ handleFiles(e.target.files).finally(function(){ e.target.value = ''; });
 });
 }
 
+// Musique
 var musicInput = $('music-input');
 if (musicInput) {
 musicInput.addEventListener('change', function(e){
@@ -2969,9 +2876,11 @@ e.target.value = '';
 });
 }
 
+// Ajouter personnage
 var addCharBtn = $('add-char-btn');
 if (addCharBtn) addCharBtn.addEventListener('click', addCharacter);
 
+// Scène inputs
 [['scene-action','action'],['scene-setting','setting'],['scene-mood','mood'],['scene-dialogue','dialogue']].forEach(function(pair){
 var el = $(pair[0]);
 if (!el) return;
@@ -2989,8 +2898,10 @@ updateStoryboard();
 });
 });
 
+// Slider plans
 bindPlansSlider();
 
+// Agent
 var agentIdea = $('agent-idea');
 if (agentIdea) agentIdea.addEventListener('input', updateAgentBtn);
 var aop = $('agent-opt-photos');
@@ -2998,13 +2909,11 @@ var aog = $('agent-opt-generate');
 if (aop && aog) {
 aop.addEventListener('click', function(){
 aop.classList.add('active'); aog.classList.remove('active');
-aop.setAttribute('aria-pressed', 'true'); aog.setAttribute('aria-pressed', 'false');
 state.agent.usePhotos = true; state.agent.generateImages = false;
 updateAgentBtn();
 });
 aog.addEventListener('click', function(){
 aog.classList.add('active'); aop.classList.remove('active');
-aog.setAttribute('aria-pressed', 'true'); aop.setAttribute('aria-pressed', 'false');
 state.agent.usePhotos = false; state.agent.generateImages = true;
 updateAgentBtn();
 });
@@ -3012,6 +2921,7 @@ updateAgentBtn();
 var agentLaunch = $('agent-launch-btn');
 if (agentLaunch) agentLaunch.addEventListener('click', runAgent);
 
+// PROTOCOLE — bouton et zone
 var ppb = $('protocol-pick-btn');
 var pi = $('protocol-input');
 var pz = $('protocol-zone');
@@ -3041,11 +2951,13 @@ if (pa) pa.addEventListener('click', analyzeProtocolText);
 var pc = $('protocol-clear-btn');
 if (pc) pc.addEventListener('click', clearProtocol);
 
+// Generate
 var generateBtn = $('generate-btn');
 if (generateBtn) generateBtn.addEventListener('click', startGeneration);
 var stopBtn = $('stop-btn');
 if (stopBtn) stopBtn.addEventListener('click', stopGeneration);
 
+// Galerie
 var exportBtn = $('export-all-btn');
 if (exportBtn) exportBtn.addEventListener('click', exportAll);
 var clearBtn = $('clear-all-btn');
@@ -3053,12 +2965,14 @@ if (clearBtn) clearBtn.addEventListener('click', clearAll);
 var resetBtn = $('reset-app-btn');
 if (resetBtn) resetBtn.addEventListener('click', resetApp);
 
+// Upscale modal
 var uc = $('upscale-close-btn');
 if (uc) uc.addEventListener('click', function(){
 var m = $('upscale-modal');
 if (m) m.classList.remove('visible');
 });
 
+// Toggles
 var coherenceToggle = $('coherence-toggle');
 var coherenceSettings = $('coherence-toggle-settings');
 function syncCoherence() {
@@ -3103,6 +3017,7 @@ saveStorage();
 });
 }
 
+// Mode génération
 document.querySelectorAll('[data-genmode]').forEach(function(el){
 el.classList.toggle('selected', el.getAttribute('data-genmode') === state.generationMode);
 el.addEventListener('click', function(){
@@ -3114,6 +3029,7 @@ updateManualPanel();
 });
 });
 
+// Mode manuel
 var mgb = $('manual-generate-btn');
 if (mgb) mgb.addEventListener('click', generateManualPlan);
 var mrb = $('manual-regen-btn');
@@ -3121,19 +3037,24 @@ if (mrb) mrb.addEventListener('click', generateManualPlan);
 var mnb = $('manual-next-btn');
 if (mnb) mnb.addEventListener('click', nextManualPlan);
 
+// Custom prompt
 var cpe = $('custom-prompt');
 if (cpe) cpe.addEventListener('input', updateGenerateBtn);
 
+// Sync toggles
 syncCoherence();
 syncTts();
 
+// Wake lock pref
 try { wakeLockEnabled = localStorage.getItem(WAKE_LOCK_PREF) === '1'; } catch (e) {}
 
+// Voix TTS
 if ('speechSynthesis' in window) {
 window.speechSynthesis.getVoices();
 window.speechSynthesis.onvoiceschanged = function(){ window.speechSynthesis.getVoices(); };
 }
 
+// Render initial
 updateApiPanel();
 renderStyles();
 renderEffects();
